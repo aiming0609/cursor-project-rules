@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "outDir": "extension/out",
+    "lib": [
+      "ES2020",
+      "DOM"
+    ],
+    "sourceMap": true,
+    "rootDir": "extension/src",
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "exclude": [
+    "node_modules",
+    ".vscode-test"
+  ]
+} 

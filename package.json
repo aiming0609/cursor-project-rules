@@ -1,0 +1,118 @@
+{
+  "name": "cursor-project-rules",
+  "displayName": "Cursor Project Rules Generator",
+  "description": "从Cursor Directory获取规则并转换为Cursor项目规则格式",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension/out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursor-project-rules.generateRules",
+        "title": "Cursor: 生成Project Rules"
+      },
+      {
+        "command": "cursor-project-rules.previewRules",
+        "title": "Cursor: 预览可用规则"
+      },
+      {
+        "command": "cursor-project-rules.configureModel",
+        "title": "Cursor: 配置AI模型URL"
+      },
+      {
+        "command": "cursor-project-rules.configureAPIKey",
+        "title": "Cursor: 配置AI模型API密钥"
+      },
+      {
+        "command": "cursor-project-rules.resetConfigPrompt",
+        "title": "Cursor: 重置配置提示状态"
+      },
+      {
+        "command": "cursor-project-rules.localRules",
+        "title": "Cursor: 选择本地规则"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursor-rules",
+          "title": "Cursor Rules",
+          "icon": "$(book)"
+        }
+      ]
+    },
+    "views": {
+      "cursor-rules": [
+        {
+          "id": "cursor-rules-view",
+          "name": "可用规则"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Cursor Project Rules",
+      "properties": {
+        "cursor-rules.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python解释器路径"
+        },
+        "cursor-rules.autoSync": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否自动同步规则"
+        },
+        "cursor-rules.customTemplateDir": {
+          "type": "string",
+          "default": "",
+          "description": "自定义模板目录"
+        },
+        "cursor-rules.modelUrl": {
+          "type": "string",
+          "default": "",
+          "description": "AI模型API的URL地址 (例如: https://api.openai.com/v1/chat/completions)"
+        },
+        "cursor-rules.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "AI模型的API密钥 (调用API需要的授权密钥)"
+        },
+        "cursor-rules.modelName": {
+          "type": "string",
+          "default": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+          "description": "使用的AI模型名称"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint extension/src --ext ts",
+    "test": "node ./extension/out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^7.2.0",
+    "@types/mocha": "^9.1.1",
+    "@types/node": "16.x",
+    "@types/vscode": "^1.70.0",
+    "@typescript-eslint/eslint-plugin": "^5.31.0",
+    "@typescript-eslint/parser": "^5.31.0",
+    "@vscode/test-electron": "^2.1.5",
+    "eslint": "^8.20.0",
+    "glob": "^8.0.3",
+    "mocha": "^10.0.0",
+    "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12"
+  }
+} 
