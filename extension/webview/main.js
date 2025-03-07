@@ -22,10 +22,28 @@ function init() {
   // 注册按钮事件
   if (applyButton) {
     applyButton.addEventListener('click', () => {
-      vscode.postMessage({
-        command: 'applyRules',
-        ruleIds: selectedRuleIds
-      });
+      if (selectedRuleIds.length > 0) {
+        vscode.postMessage({
+          command: 'generateRule',
+          ruleId: selectedRuleIds[0]  // 只发送第一个选中的规则ID
+        });
+      } else {
+        // 如果没有选中规则，显示提示
+        const emptyMessage = document.createElement('div');
+        emptyMessage.className = 'empty-message error';
+        emptyMessage.textContent = '请先选择一个规则';
+        
+        if (!document.querySelector('.empty-message.error')) {
+          rulesListElement.insertBefore(emptyMessage, rulesListElement.firstChild);
+          
+          // 3秒后自动移除提示
+          setTimeout(() => {
+            if (emptyMessage.parentNode) {
+              emptyMessage.parentNode.removeChild(emptyMessage);
+            }
+          }, 3000);
+        }
+      }
     });
   }
 

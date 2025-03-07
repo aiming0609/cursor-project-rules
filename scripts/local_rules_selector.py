@@ -14,6 +14,8 @@ import requests
 import glob
 from pathlib import Path
 import time
+from urllib.parse import urlparse
+import re
 
 # 导入配置管理模块
 try:
@@ -26,10 +28,27 @@ except ImportError:
 # 设置控制台编码，避免乱码
 if sys.platform == 'win32':
     import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+    import io
+    import locale
+    
+    # 获取系统默认编码
+    system_encoding = locale.getpreferredencoding(False)
+    
+    # 尝试更可靠的编码设置方式
+    try:
+        # 检查是否在VSCode集成终端中运行
+        if 'VSCODE_CWD' in os.environ or 'TERM_PROGRAM' in os.environ and os.environ['TERM_PROGRAM'] == 'vscode':
+            # VSCode终端通常支持UTF-8
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        else:
+            # 使用系统默认编码
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding=system_encoding, errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding=system_encoding, errors='replace')
+    except Exception as e:
+        print(f"设置编码时出错: {e}")
 
-# 配置日志
+# 设置日志格式
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,603 +56,726 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# MDC模板
-MDC_TEMPLATE = """---
-name: {name}.mdc
-description: {description}
-globs: {globs}
----
-
-{content}
-"""
+# 全局设置
+MODEL_TIMEOUT = 60  # API调用超时时间（秒）
+MAX_RETRIES = 2     # 最大重试次数
 
 def load_rules_from_json(json_path):
-    """从JSON文件加载规则数据"""
+    """
+    从JSON文件加载规则数据
+    """
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
             rules = json.load(f)
-        logger.info(f"成功从 {json_path} 加载了 {len(rules)} 条规则")
-        return rules
+        
+        # 预处理规则，确保格式一致
+        processed_rules = []
+        for rule in rules:
+            # 确保规则具有必要的字段
+            if isinstance(rule, dict):
+                # 处理结构化规则格式
+                if 'name' not in rule and 'title' in rule:
+                    rule['name'] = rule['title']
+                
+                # 确保名称以.mdc结尾
+                if 'name' in rule and not rule['name'].endswith('.mdc'):
+                    rule['name'] = rule['name'] + '.mdc'
+                
+                # 如果没有description，但有title，使用title
+                if 'description' not in rule and 'title' in rule:
+                    rule['description'] = rule['title']
+                
+                # 如果没有globs，设置默认值
+                if 'globs' not in rule:
+                    rule['globs'] = '**/*.{js,ts,jsx,tsx}'
+                
+                # 确保有content字段
+                if 'content' not in rule:
+                    rule['content'] = '- 无规则内容'
+                
+                processed_rules.append(rule)
+        
+        logger.info(f"成功从{json_path}加载了{len(processed_rules)}条规则")
+        return processed_rules
     except Exception as e:
-        logger.error(f"加载规则数据时出错: {str(e)}")
+        logger.error(f"加载规则数据失败: {str(e)}")
         return []
 
 def display_rules_list(rules):
-    """显示规则列表"""
-    print("\n===== 可用规则列表 =====\n")
+    """
+    显示规则列表供用户选择
+    """
+    print("\n可用规则列表：")
+    print("-" * 80)
+    print(f"{'序号':<5}{'名称':<30}{'描述':<45}")
+    print("-" * 80)
     
-    for i, rule in enumerate(rules):
-        title = rule.get('title', f"规则 {i+1}")
-        tags = ', '.join(rule.get('tags', []))
-        print(f"{i+1}. {title}")
-        if tags:
-            print(f"   标签: {tags}")
-        
-        # 显示简短描述（取内容的前100个字符）
-        content = rule.get('content', '')
-        if content:
-            short_desc = content.strip()[:100].replace('\n', ' ')
-            print(f"   描述: {short_desc}..." if len(content) > 100 else f"   描述: {short_desc}")
-        
-        print()
+    max_rules = min(len(rules), 99)  # 最多显示99条规则
     
-    return len(rules)
+    for i in range(max_rules):
+        rule = rules[i]
+        # 截断过长的名称和描述
+        name = rule.get('name', 'Unknown')[:28] + '..' if len(rule.get('name', 'Unknown')) > 28 else rule.get('name', 'Unknown')
+        description = rule.get('description', '')[:43] + '..' if len(rule.get('description', '')) > 43 else rule.get('description', '')
+        
+        print(f"{i+1:<5}{name:<30}{description:<45}")
+    
+    print("-" * 80)
+    return max_rules
 
 def select_rules(rules, max_rules):
-    """让用户选择规则"""
+    """
+    让用户选择要使用的规则
+    """
     selected_indices = []
     
     while True:
         try:
-            # 提示用户输入
-            selection = input("\n请输入要选择的规则编号 (用逗号分隔多个编号，输入'all'选择所有，输入'q'完成选择): ")
+            selection = input("\n请输入规则序号(1-{})，多个规则用逗号分隔，输入'all'选择所有规则: ".format(max_rules))
             
-            # 检查是否退出
-            if selection.lower() == 'q':
-                break
-            
-            # 检查是否选择所有
             if selection.lower() == 'all':
-                selected_indices = list(range(1, max_rules + 1))
-                print(f"已选择所有 {max_rules} 条规则")
+                logger.info("用户选择了所有规则")
+                return rules[:max_rules]
+            
+            # 分割并验证输入
+            indices = [int(idx.strip()) for idx in selection.split(',') if idx.strip()]
+            
+            # 验证输入是否有效
+            if not indices:
+                print("请至少选择一条规则")
+                continue
+            
+            # 检查索引是否在有效范围内
+            valid_indices = []
+            for idx in indices:
+                if 1 <= idx <= max_rules:
+                    valid_indices.append(idx - 1)  # 转换为0-based索引
+                else:
+                    print(f"序号 {idx} 超出范围，有效范围是1-{max_rules}")
+            
+            if valid_indices:
+                selected_indices = valid_indices
                 break
             
-            # 解析选择的编号
-            selected = [int(idx.strip()) for idx in selection.split(',')]
-            
-            # 验证编号范围
-            for idx in selected:
-                if idx < 1 or idx > max_rules:
-                    print(f"错误: 规则编号 {idx} 超出范围 (1-{max_rules})")
-                else:
-                    if idx not in selected_indices:
-                        selected_indices.append(idx)
-            
-            # 显示当前选择
-            if selected_indices:
-                print(f"当前已选择: {', '.join(map(str, selected_indices))}")
-        
         except ValueError:
-            print("错误: 请输入有效的数字或命令")
-        except Exception as e:
-            print(f"出错: {str(e)}")
+            print("请输入有效的数字")
+            continue
     
-    # 返回实际的规则对象（索引转换为0基）
-    return [rules[idx - 1] for idx in selected_indices]
+    # 根据索引选择规则
+    selected_rules = [rules[idx] for idx in selected_indices]
+    logger.info(f"用户选择了{len(selected_rules)}条规则")
+    
+    return selected_rules
 
-def analyze_project_structure(workspace_path):
-    """分析项目文件结构，获取项目上下文信息"""
-    logger.info(f"分析项目结构: {workspace_path}")
+def get_project_info(workspace_path):
+    """
+    分析项目结构，获取项目信息
+    """
     project_info = {
-        "file_types": {},
-        "directories": [],
-        "technologies": set(),
-        "sample_files": []
+        "file_types": [],
+        "framework_hints": [],
+        "total_files": 0,
+        "directory_structure": []
     }
     
-    # 排除目录
-    exclude_dirs = ['.git', 'node_modules', '.vscode', '__pycache__', 'venv', 'dist', 'build']
-    
-    # 遍历项目文件
+    # 检测文件类型和数量
+    file_types = {}
     for root, dirs, files in os.walk(workspace_path):
-        # 排除指定目录
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        # 忽略隐藏目录和node_modules
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'node_modules']
         
-        # 相对路径
-        rel_path = os.path.relpath(root, workspace_path)
-        if rel_path != '.' and not any(ex in rel_path for ex in exclude_dirs):
-            project_info["directories"].append(rel_path)
-        
-        # 统计文件类型
         for file in files:
-            _, ext = os.path.splitext(file)
+            ext = os.path.splitext(file)[1].lower()
             if ext:
-                ext = ext.lower()[1:]  # 移除点号并转为小写
-                if ext in project_info["file_types"]:
-                    project_info["file_types"][ext] += 1
+                if ext in file_types:
+                    file_types[ext] += 1
                 else:
-                    project_info["file_types"][ext] = 1
-                    
-                # 收集样本文件（每种类型最多3个）
-                if ext in ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cs', 'php', 'rb', 'go', 'rs']:
-                    file_category = f"{ext}_files"
-                    if file_category not in project_info:
-                        project_info[file_category] = []
-                    
-                    if len(project_info[file_category]) < 3:
-                        file_path = os.path.join(root, file)
-                        try:
-                            with open(file_path, 'r', encoding='utf-8') as f:
-                                content = f.read(2000)  # 读取前2000个字符
-                            project_info[file_category].append({
-                                "path": os.path.relpath(file_path, workspace_path),
-                                "sample": content
-                            })
-                        except:
-                            pass  # 忽略无法读取的文件
+                    file_types[ext] = 1
+                project_info["total_files"] += 1
     
-    # 检测技术栈
-    detect_technologies(project_info)
+    # 选择最常见的5种文件类型
+    sorted_types = sorted(file_types.items(), key=lambda x: x[1], reverse=True)
+    project_info["file_types"] = [{"extension": ext, "count": count} for ext, count in sorted_types[:5]]
+    
+    # 检测可能的框架
+    framework_hints = []
+    
+    # 检测前端框架
+    if os.path.exists(os.path.join(workspace_path, 'package.json')):
+        try:
+            with open(os.path.join(workspace_path, 'package.json'), 'r', encoding='utf-8') as f:
+                pkg_data = json.load(f)
+                deps = {**pkg_data.get('dependencies', {}), **pkg_data.get('devDependencies', {})}
+                
+                if 'react' in deps:
+                    framework_hints.append("React")
+                if 'vue' in deps:
+                    framework_hints.append("Vue")
+                if 'angular' in deps or '@angular/core' in deps:
+                    framework_hints.append("Angular")
+                if 'next' in deps:
+                    framework_hints.append("Next.js")
+                if 'nuxt' in deps:
+                    framework_hints.append("Nuxt.js")
+        except:
+            pass
+    
+    # 检测后端框架
+    if os.path.exists(os.path.join(workspace_path, 'requirements.txt')):
+        try:
+            with open(os.path.join(workspace_path, 'requirements.txt'), 'r', encoding='utf-8') as f:
+                content = f.read()
+                if 'django' in content.lower():
+                    framework_hints.append("Django")
+                if 'flask' in content.lower():
+                    framework_hints.append("Flask")
+                if 'fastapi' in content.lower():
+                    framework_hints.append("FastAPI")
+        except:
+            pass
+    
+    project_info["framework_hints"] = framework_hints
+    
+    # 获取目录结构
+    base_dirs = [d for d in os.listdir(workspace_path) 
+                if os.path.isdir(os.path.join(workspace_path, d)) 
+                and not d.startswith('.') 
+                and d not in ['node_modules', 'venv', 'env', '__pycache__']]
+    
+    project_info["directory_structure"] = base_dirs
     
     return project_info
 
-def detect_technologies(project_info):
-    """基于文件类型和存在的配置文件检测项目使用的技术栈"""
-    # 检查文件类型分布
-    file_types = project_info["file_types"]
+def convert_to_markdown(content):
+    """
+    将规则内容转换为格式良好的Markdown
+    """
+    if not content:
+        return "- 无规则内容"
     
-    # 前端技术
-    if any(ext in file_types for ext in ['jsx', 'tsx']):
-        project_info["technologies"].add("React")
-    
-    if 'vue' in file_types:
-        project_info["technologies"].add("Vue.js")
-    
-    if 'svelte' in file_types:
-        project_info["technologies"].add("Svelte")
-    
-    # 后端技术
-    if 'py' in file_types:
-        project_info["technologies"].add("Python")
+    # 如果已经是字符串，进行处理
+    if isinstance(content, str):
+        # 分割成行
+        lines = content.split('\n')
+        formatted_lines = []
         
-    if 'rb' in file_types:
-        project_info["technologies"].add("Ruby")
-    
-    if 'php' in file_types:
-        project_info["technologies"].add("PHP")
-    
-    if 'cs' in file_types:
-        project_info["technologies"].add("C#")
-    
-    if 'java' in file_types:
-        project_info["technologies"].add("Java")
-    
-    if 'go' in file_types:
-        project_info["technologies"].add("Go")
-    
-    if 'rs' in file_types:
-        project_info["technologies"].add("Rust")
-    
-    # 检查配置文件
-    directories = " ".join(project_info["directories"])
-    
-    # 前端框架
-    if 'package.json' in directories or 'package.json' in os.listdir():
-        project_info["technologies"].add("Node.js")
+        # 处理每一行
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # 确保每行都以减号开头(Markdown列表项)
+            if not line.startswith('-') and not line.startswith('#') and not line.startswith('*'):
+                line = f"- {line}"
+                
+            # 处理可能的代码块
+            if '```' in line:
+                formatted_lines.append(line)
+            else:
+                # 对于普通文本，确保格式一致
+                formatted_lines.append(line)
         
-        try:
-            with open('package.json', 'r') as f:
-                package_data = json.load(f)
-                deps = {**package_data.get('dependencies', {}), **package_data.get('devDependencies', {})}
-                
-                if 'next' in deps:
-                    project_info["technologies"].add("Next.js")
-                
-                if 'nuxt' in deps:
-                    project_info["technologies"].add("Nuxt.js")
-                
-                if 'gatsby' in deps:
-                    project_info["technologies"].add("Gatsby")
-                
-                if 'tailwindcss' in deps:
-                    project_info["technologies"].add("Tailwind CSS")
-                
-                if '@angular/core' in deps:
-                    project_info["technologies"].add("Angular")
-        except:
-            pass
+        # 如果处理后没有内容，添加默认行
+        if not formatted_lines:
+            formatted_lines.append("- 无规则内容")
+            
+        # 合并成Markdown文本
+        markdown_content = '\n'.join(formatted_lines)
+        
+        # 检查是否有代码段，如果有确保格式正确
+        if '```' in markdown_content:
+            # 确保代码块前后有空行
+            markdown_content = markdown_content.replace('\n```', '\n\n```')
+            markdown_content = markdown_content.replace('```\n', '```\n\n')
+        
+        return markdown_content
     
-    # 后端框架
-    if 'requirements.txt' in directories or 'requirements.txt' in os.listdir():
-        try:
-            with open('requirements.txt', 'r') as f:
-                content = f.read().lower()
-                
-                if 'django' in content:
-                    project_info["technologies"].add("Django")
-                
-                if 'flask' in content:
-                    project_info["technologies"].add("Flask")
-                
-                if 'fastapi' in content:
-                    project_info["technologies"].add("FastAPI")
-        except:
-            pass
-    
-    # 移动开发
-    if 'pubspec.yaml' in directories or 'pubspec.yaml' in os.listdir():
-        project_info["technologies"].add("Flutter")
-    
-    if 'android' in directories or 'AndroidManifest.xml' in directories:
-        project_info["technologies"].add("Android")
-    
-    if 'ios' in directories or 'Info.plist' in directories:
-        project_info["technologies"].add("iOS")
-    
-    # 将集合转换为列表
-    project_info["technologies"] = list(project_info["technologies"])
+    # 如果是其他类型（列表、字典等），尝试转换
+    elif isinstance(content, list):
+        # 如果是列表，将每个项目转换为列表项
+        return '\n'.join([f"- {item}" for item in content if item])
+    elif isinstance(content, dict):
+        # 如果是字典，将键值对转换为列表项
+        return '\n'.join([f"- {k}: {v}" for k, v in content.items()])
+    else:
+        # 其他类型，转为字符串后添加减号
+        return f"- {str(content)}"
 
-def call_ai_model(rule, project_info, model_url, api_key, model_name):
-    """调用AI模型生成规则内容"""
-    # 准备提示内容
-    title = rule.get('title', '未命名规则')
-    content = rule.get('content', '').strip()
-    tags = rule.get('tags', [])
+def analyze_with_ai(content, project_info, config):
+    """
+    使用AI模型分析内容并生成规则，使用流式处理实时生成规则文件
     
-    # 准备项目信息
-    file_types_info = ", ".join([f"{ext} ({count}个文件)" for ext, count in sorted(
-        project_info["file_types"].items(), key=lambda x: x[1], reverse=True)[:10]])
-    
-    technologies = ", ".join(project_info["technologies"]) if project_info["technologies"] else "未检测到明确的技术栈"
-    
-    # 构建提示
-    prompt = f"""您是一个专业的编程规则生成器。根据以下项目信息和规则模板，生成适合该项目的自定义规则。
+    @param content - 需要分析的内容
+    @param project_info - 项目信息
+    @param config - AI模型配置
+    @yield Tuple[str, str, str, str] - 生成规则元组 (name, description, globs, content)
+    """
+    try:
+        # 准备系统提示词
+        system_prompt = """你是一个专业的代码分析助手，专门负责创建和组织 Cursor MDC 规则文件。
+你需要将输入的内容转换为多个规则，每个规则都应该遵循以下规范：
 
-项目信息:
-- 文件类型分布: {file_types_info}
-- 检测到的技术栈: {technologies}
-- 目录结构: {project_info["directories"][:5] if len(project_info["directories"]) > 0 else "没有子目录"}
+1. 命名规范（name）：
+   - 使用 kebab-case（小写字母和连字符）
+   - 格式：{技术}-best-practices 或 {技术}-{功能}-practices
+   - 示例：nextjs-best-practices, typescript-validation-practices
+   - 常见前缀：nextjs, react, typescript, tailwindcss, shadcn-ui, radix-ui, zustand, tanstack-query, zod
 
-规则模板:
-- 标题: {title}
-- 标签: {', '.join(tags)}
-- 内容:
-{content[:500]}...
+2. 文件匹配（glob_pattern）：
+   - 针对特定技术和文件类型
+   - 常见模式：**/*.{ts,tsx} 或 **/*.{ts,tsx,js,jsx}
+   - 可以指定具体目录：app/**/*.{ts,tsx}, components/**/*.{ts,tsx}
+   - 避免过于宽泛的匹配
 
-任务：
-1. 分析项目的技术栈和文件类型
-2. 根据规则模板和项目特点，生成定制化的编码规则
-3. 确定适合该项目的文件匹配模式（globs）
-4. 将规则内容格式化为Markdown列表，每条规则前面有一个减号(-)
+3. 描述规范（description）：
+   - 简洁明了的一句话描述
+   - 格式：Best practices for [技术/领域] [具体方面]
+   - 示例：Best practices for Next.js applications and routing
+   - 突出核心技术和主要目的
 
-请返回一个JSON对象，包含以下字段:
-- globs: 文件匹配模式，例如 "**/*.{js,jsx}"
-- content: 格式化的规则内容，每行一条规则，以减号开头
+4. 内容规范（content）：
+   - 使用无序列表（减号 + 空格开头）
+   - 每条规则独立且可执行
+   - 包含具体的技术实践
+   - 使用简洁的技术术语
+   - 避免过于理论化的描述
+   - 保持 4-6 条核心规则
+   - 每条规则一行，以换行符分隔
+   - 规则结尾不加标点符号
 
-请确保返回的是有效的JSON格式。
+请直接返回 JSON 数组，不要添加任何 Markdown 格式。"""
+
+        # 准备项目信息字符串
+        project_info_str = f"""项目信息:
+- 主要文件类型: {', '.join([f"{item['extension']}({item['count']}个)" for item in project_info['file_types']])}
+- 检测到的框架/库: {', '.join(project_info['framework_hints']) if project_info['framework_hints'] else '未检测到明确框架'}
+- 目录结构: {', '.join(project_info['directory_structure'])}
+- 文件总数: {project_info['total_files']}
 """
 
-    # 如果有样本文件，添加到提示中
-    sample_files = []
-    for ext in ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cs', 'php']:
-        key = f"{ext}_files"
-        if key in project_info and project_info[key]:
-            # 只添加第一个样本文件
-            sample = project_info[key][0]
-            sample_files.append(f"样本文件 ({sample['path']}):\n```{ext}\n{sample['sample'][:300]}...\n```")
-    
-    if sample_files:
-        # 最多添加2个样本文件
-        prompt += "\n样本文件（帮助你理解项目代码风格）:\n" + "\n".join(sample_files[:2])
-    
-    try:
-        # 构建请求
+        # 准备用户提示内容
+        user_prompt = f"""分析以下内容并创建多个 Cursor 规则文件 (.mdc)，参考以下示例格式：
+
+{{
+  "name": "nextjs-best-practices",
+  "glob_pattern": "**/*.{{ts,tsx}}",
+  "description": "Best practices for Next.js applications and routing",
+  "content": "- Favor React Server Components (RSC) for improved performance and SEO\\n- Use the App Router for better routing and data fetching\\n- Implement dynamic imports for code splitting and lazy loading\\n- Optimize images using Next.js Image component with WebP format and size data"
+}}
+
+{{
+  "name": "typescript-best-practices",
+  "glob_pattern": "**/*.{{ts,tsx}}",
+  "description": "Best practices for TypeScript development and type safety",
+  "content": "- Enable strict mode in tsconfig for better type checking\\n- Use type inference where possible but add explicit types for clarity\\n- Implement custom type guards for runtime type checking\\n- Use generics for reusable components and utility functions"
+}}
+
+{project_info_str}
+
+请分析以下内容并生成多个规则：
+
+{content}
+
+返回一个有效的 JSON 数组，每个规则对象必须包含上述四个字段，并严格遵循示例格式。"""
+
+        # 调用 API
+        model_url = config.get('model_url')
+        api_key = config.get('api_key')
+        model_name = config.get('model_name')
+        
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
         }
         
         data = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "你是一个专业的编程规则生成器，擅长为各种编程语言和框架创建最佳实践规则。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.5,
-            "max_tokens": 2000
+            "temperature": 0.2,
+            "max_tokens": 2048,
+            "top_p": 0.95,
+            "n": 1,
+            "stream": True,
+            "stop": None
         }
         
-        # 发送请求
-        logger.info(f"调用AI模型生成规则内容: {title}")
-        response = requests.post(model_url, headers=headers, json=data)
+        logger.info("正在调用 AI API（流式处理模式）...")
+        response = requests.post(model_url, headers=headers, json=data, stream=True)
         
         if response.status_code != 200:
-            logger.error(f"AI模型调用失败: {response.status_code} - {response.text}")
-            return None
+            logger.error(f"API 调用失败: {response.status_code}")
+            logger.error(f"错误信息: {response.text}")
+            return
+            
+        # 用于存储JSON文本
+        json_text = ""
+        in_json = False
         
-        # 解析响应
-        result = response.json()
-        message_content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-        
-        # 尝试提取JSON
-        try:
-            # 查找JSON部分
-            json_start = message_content.find('{')
-            json_end = message_content.rfind('}') + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_part = message_content[json_start:json_end]
-                ai_result = json.loads(json_part)
-                
-                # 验证结果
-                if 'globs' in ai_result and 'content' in ai_result:
-                    logger.info(f"成功从AI模型获取定制规则内容")
-                    return ai_result
-            
-            # 如果没有找到有效的JSON，尝试直接提取内容
-            logger.warning("无法从AI响应中解析JSON，尝试直接提取内容")
-            
-            # 查找内容部分
-            content_lines = []
-            for line in message_content.split('\n'):
-                if line.strip().startswith('-'):
-                    content_lines.append(line)
-            
-            if content_lines:
-                # 推断文件匹配模式
-                globs = "**/*.{js,ts,jsx,tsx}"  # 默认值
-                
-                # 根据技术栈调整
-                if "Python" in project_info["technologies"]:
-                    globs = "**/*.py"
-                elif "Java" in project_info["technologies"]:
-                    globs = "**/*.java"
-                elif "C#" in project_info["technologies"]:
-                    globs = "**/*.cs"
-                elif "React" in project_info["technologies"]:
-                    globs = "**/*.{jsx,tsx}"
-                
-                return {
-                    "globs": globs,
-                    "content": "\n".join(content_lines)
-                }
-            
-            logger.error("无法从AI响应中提取规则内容")
-            return None
-            
-        except json.JSONDecodeError:
-            logger.error(f"无法解析AI响应为JSON: {message_content[:200]}...")
-            return None
+        # 处理流式响应
+        for line in response.iter_lines():
+            if line:
+                try:
+                    if line.startswith(b"data: "):
+                        json_str = line[6:].decode('utf-8')
+                        if json_str.strip() == "[DONE]":
+                            break
+                            
+                        chunk = json.loads(json_str)
+                        if "choices" in chunk and chunk["choices"]:
+                            content_delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                            if content_delta:
+                                # 检测JSON数组的开始和结束
+                                if '[' in content_delta:
+                                    in_json = True
+                                
+                                if in_json:
+                                    json_text += content_delta
+                                    
+                                    # 尝试解析完整的JSON对象
+                                    if '},' in json_text or '}]' in json_text:
+                                        try:
+                                            # 提取可能完整的JSON对象
+                                            while True:
+                                                obj_start = json_text.find('{')
+                                                obj_end = json_text.find('},')
+                                                if obj_end == -1:
+                                                    obj_end = json_text.find('}]')
+                                                
+                                                if obj_start != -1 and obj_end != -1:
+                                                    obj_text = json_text[obj_start:obj_end+1]
+                                                    try:
+                                                        rule = json.loads(obj_text)
+                                                        # 生成规则元组
+                                                        yield (
+                                                            rule.get("name", "unknown"),
+                                                            rule.get("description", ""),
+                                                            rule.get("glob_pattern", "**/*"),
+                                                            rule.get("content", "")
+                                                        )
+                                                        # 移除已处理的对象
+                                                        json_text = json_text[obj_end+1:]
+                                                    except json.JSONDecodeError:
+                                                        break
+                                                else:
+                                                    break
+                                        except Exception as e:
+                                            logger.warning(f"解析规则时出错: {str(e)}")
+                                            
+                except Exception as e:
+                    logger.warning(f"处理数据块时出错: {str(e)}")
+                    continue
         
     except Exception as e:
-        logger.error(f"调用AI模型时出错: {str(e)}")
-        return None
+        logger.error(f"AI 分析出错: {str(e)}")
+        yield ("error-rule.mdc", f"Error: {str(e)}", "**/*", "- 处理出错，请检查日志")
 
-def convert_rule_to_mdc(rule, project_info, output_dir, use_ai=False, model_config=None):
-    """将规则转换为MDC格式并保存，可选择使用AI模型定制内容"""
-    try:
-        # 提取规则属性
-        title = rule.get('title', '未命名规则')
-        content = rule.get('content', '').strip()
-        tags = rule.get('tags', [])
-        slug = rule.get('slug', '').lower() or title.lower().replace(' ', '-')
-        
-        # 创建文件名
-        file_name = f"{slug}-practices"
-        
-        # 适用的文件类型和内容
-        glob_pattern = "**/*.{js,ts,jsx,tsx}"  # 默认匹配所有JS/TS文件
-        final_content = ""
-        
-        # 调用AI模型定制规则内容（如果启用）
-        if use_ai and model_config and all(model_config.values()):
-            model_url = model_config.get('model_url')
-            api_key = model_config.get('api_key')
-            model_name = model_config.get('model_name')
-            
-            ai_result = call_ai_model(rule, project_info, model_url, api_key, model_name)
-            
-            if ai_result:
-                glob_pattern = ai_result.get('globs', glob_pattern)
-                content = ai_result.get('content', content)
-        
-        # 如果没有使用AI或AI调用失败，使用基本处理
-        if not final_content:
-            # 根据标签和项目信息调整匹配模式
-            if "React" in project_info.get("technologies", []) or "react" in tags:
-                glob_pattern = "**/*.{jsx,tsx}"
-            elif "Vue.js" in project_info.get("technologies", []) or "vue" in tags:
-                glob_pattern = "**/*.vue"
-            elif "Angular" in project_info.get("technologies", []) or "angular" in tags:
-                glob_pattern = "**/*.{ts,html,scss}"
-            elif "Python" in project_info.get("technologies", []) or "python" in tags:
-                glob_pattern = "**/*.py"
-            elif "C#" in project_info.get("technologies", []) or "csharp" in tags:
-                glob_pattern = "**/*.cs"
-            elif "Java" in project_info.get("technologies", []) or "java" in tags:
-                glob_pattern = "**/*.java"
-            
-            # 处理内容，将其格式化为减号开头的列表项
-            formatted_content = []
-            for line in content.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('-'):
-                    if line.startswith('#') or line.startswith('*'):
-                        # 保持标题或已有列表项格式
-                        formatted_content.append(line)
-                    else:
-                        # 将普通文本转换为列表项
-                        formatted_content.append(f"- {line}")
-                elif line:
-                    formatted_content.append(line)
-            
-            # 合并处理后的内容
-            final_content = '\n'.join(formatted_content)
-        else:
-            final_content = content
-        
-        # 创建MDC内容
-        mdc_content = MDC_TEMPLATE.format(
-            name=file_name,
-            description=title,
-            globs=glob_pattern,
-            content=final_content
-        )
-        
-        # 保存到文件
-        output_path = os.path.join(output_dir, f"{file_name}.mdc")
-        
-        # 确保目录存在
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # 使用二进制模式写入，确保正确编码
-        with open(output_path, 'wb') as f:
-            f.write(mdc_content.encode('utf-8'))
-        
-        logger.info(f"已创建规则文件: {output_path}")
-        return output_path
-    
-    except Exception as e:
-        logger.error(f"转换规则时出错: {str(e)}")
-        return None
-
-def check_model_config():
-    """检查是否配置了AI模型"""
-    # 使用配置管理模块获取配置
-    config = get_model_config()
-    
-    # 验证配置是否完整
-    if all([config.get('model_url'), config.get('api_key'), config.get('model_name')]):
-        return {
-            'model_url': config.get('model_url'),
-            'api_key': config.get('api_key'),
-            'model_name': config.get('model_name')
-        }
-    
-    return None
-
-def process_selected_rules(selected_rules, workspace_path, use_ai=False):
-    """处理选中的规则，转换为MDC格式"""
+def process_selected_rules(selected_rules, workspace_path, use_ai=True):
+    """
+    处理选中的规则，使用AI定制内容并保存为MDC文件
+    采用流式处理方式，每处理完一个规则就立即保存
+    """
     if not selected_rules:
-        logger.warning("未选择任何规则，操作已取消")
+        logger.warning("没有选择任何规则")
         return
     
-    # 创建规则输出目录
+    # 准备输出目录
     output_dir = os.path.join(workspace_path, '.cursor', 'rules')
     os.makedirs(output_dir, exist_ok=True)
     
-    # 分析项目结构
-    project_info = analyze_project_structure(workspace_path)
-    logger.info(f"项目技术栈: {', '.join(project_info['technologies'])}")
+    # 获取AI模型配置
+    config = get_model_config() if use_ai else None
     
-    # 检查AI模型配置
-    model_config = None
-    if use_ai:
-        model_config = check_model_config()
-        if not model_config:
-            logger.warning("未提供完整的AI模型配置，将使用基本转换")
-            use_ai = False
+    # 项目分析
+    logger.info("分析项目结构中...")
+    project_info = get_project_info(workspace_path)
+    logger.info(f"项目分析完成: 检测到{len(project_info['file_types'])}种主要文件类型, {len(project_info['framework_hints'])}种框架/库")
     
-    # 转换并保存规则
-    created_files = []
+    # 计算总规则数量
     total_rules = len(selected_rules)
+    successful = 0
+    rules_generated = 0
     
+    # 逐个处理每条规则
     for i, rule in enumerate(selected_rules):
-        logger.info(f"处理规则 {i+1}/{total_rules}: {rule.get('title', '未命名规则')}")
-        file_path = convert_rule_to_mdc(rule, project_info, output_dir, use_ai, model_config)
-        if file_path:
-            created_files.append(file_path)
-        
-        # 添加一些延迟，避免API限制
-        if use_ai and i < total_rules - 1:
-            time.sleep(1)
+        try:
+            # 确保规则是标准格式
+            rule_data = prep_rule_data(rule)
+            
+            rule_name = rule_data.get('name', 'Unknown')
+            logger.info(f"处理规则: {rule_name}")
+            
+            # 使用AI定制规则内容
+            if use_ai and config:
+                logger.info(f"正在调用 AI API (流式处理模式)...")
+                
+                # 获取规则内容
+                rule_content = rule_data.get('content', '- 没有提供规则内容')
+                
+                # 将规则内容转换为Markdown格式
+                markdown_content = convert_to_markdown(rule_content)
+                
+                # 调用AI分析规则内容并生成多个规则
+                for rule_tuple in analyze_with_ai(markdown_content, project_info, config):
+                    # 处理并保存规则
+                    name, description, glob_pattern, content = rule_tuple
+                    
+                    # 确保name以.mdc结尾
+                    if not name.endswith('.mdc'):
+                        name = f"{name}.mdc"
+                    
+                    # 创建MDC内容
+                    mdc_content = f"""---
+name: {name}
+description: {description}
+globs: {glob_pattern}
+---
+
+{content}
+"""
+                    
+                    # 保存MDC文件
+                    output_path = os.path.join(output_dir, name)
+                    with open(output_path, 'wb') as f:
+                        f.write(mdc_content.encode('utf-8'))
+                    
+                    rules_generated += 1
+                    successful += 1
+                    logger.info(f"已创建规则文件: {output_path}")
+                
+                if rules_generated > 0:
+                    logger.info(f"已处理 {rules_generated} 个规则...")
+                else:
+                    # 如果没有生成规则，直接保存原始规则
+                    logger.info("未能生成规则，使用原始规则...")
+                    
+                    # 保存原始规则
+                    name = rule_data.get('name', 'unknown_rule.mdc')
+                    description = rule_data.get('description', 'Auto-generated rule')
+                    glob_pattern = rule_data.get('globs', '**/*')
+                    content = rule_data.get('content', '- No rule content')
+                    
+                    # 确保name以.mdc结尾
+                    if not name.endswith('.mdc'):
+                        name = f"{name}.mdc"
+                    
+                    # 创建MDC内容
+                    mdc_content = f"""---
+name: {name}
+description: {description}
+globs: {glob_pattern}
+---
+
+{content}
+"""
+                    
+                    # 保存MDC文件
+                    output_path = os.path.join(output_dir, name)
+                    with open(output_path, 'wb') as f:
+                        f.write(mdc_content.encode('utf-8'))
+                    
+                    successful += 1
+                    logger.info(f"已创建规则文件: {output_path}")
+            else:
+                # 不使用AI，直接保存规则
+                name = rule_data.get('name', 'unknown_rule.mdc')
+                description = rule_data.get('description', 'Auto-generated rule')
+                glob_pattern = rule_data.get('globs', '**/*')
+                content = rule_data.get('content', '- No rule content')
+                
+                # 确保name以.mdc结尾
+                if not name.endswith('.mdc'):
+                    name = f"{name}.mdc"
+                
+                # 创建MDC内容
+                mdc_content = f"""---
+name: {name}
+description: {description}
+globs: {glob_pattern}
+---
+
+{content}
+"""
+                
+                # 保存MDC文件
+                output_path = os.path.join(output_dir, name)
+                with open(output_path, 'wb') as f:
+                    f.write(mdc_content.encode('utf-8'))
+                
+                successful += 1
+                logger.info(f"已创建规则文件: {output_path}")
+                
+        except Exception as e:
+            logger.error(f"处理规则时出错: {str(e)}")
     
-    # 显示结果
-    if created_files:
-        logger.info(f"成功创建 {len(created_files)} 个规则文件:")
-        for file_path in created_files:
-            logger.info(f"- {file_path}")
+    # 总结处理结果
+    logger.info(f"成功处理完成! 共创建了 {successful} 个规则文件。")
+    logger.info("处理完成!")
+
+def prep_rule_data(rule):
+    """
+    预处理规则数据，确保格式统一
+    """
+    if not isinstance(rule, dict):
+        logger.warning(f"规则不是字典格式: {rule}")
+        # 尝试转换为字典
+        try:
+            if isinstance(rule, str):
+                rule = json.loads(rule)
+            else:
+                rule = {"content": str(rule)}
+        except:
+            rule = {"content": str(rule)}
+    
+    # 创建标准规则结构的副本
+    rule_data = {}
+    
+    # 处理name字段
+    if 'name' in rule:
+        rule_data['name'] = rule['name']
+    elif 'title' in rule:
+        rule_data['name'] = rule['title']
     else:
-        logger.error("未能创建任何规则文件")
+        rule_data['name'] = 'unknown_rule.mdc'
+    
+    # 确保name以.mdc结尾
+    if not rule_data['name'].endswith('.mdc'):
+        rule_data['name'] = rule_data['name'] + '.mdc'
+    
+    # 处理description字段
+    if 'description' in rule:
+        rule_data['description'] = rule['description']
+    elif 'title' in rule:
+        rule_data['description'] = rule['title']
+    else:
+        rule_data['description'] = '自动生成的规则'
+    
+    # 处理globs字段
+    if 'globs' in rule:
+        rule_data['globs'] = rule['globs']
+    elif 'glob_pattern' in rule:
+        rule_data['globs'] = rule['glob_pattern']
+    else:
+        rule_data['globs'] = '**/*.{js,ts,jsx,tsx}'
+    
+    # 处理content字段
+    if 'content' in rule:
+        rule_data['content'] = rule['content']
+    else:
+        rule_data['content'] = '- 规则内容未定义'
+    
+    # 复制其他可能有用的字段
+    for key in rule:
+        if key not in rule_data and key not in ['name', 'title', 'description', 'globs', 'glob_pattern', 'content']:
+            rule_data[key] = rule[key]
+    
+    return rule_data
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='从本地JSON文件读取规则并提供选择界面')
-    parser.add_argument('workspace_path', help='工作区路径，用于保存生成的规则文件')
-    parser.add_argument('--rules-json', '-r', help='规则数据JSON文件路径', default='rules_data/rules.db.json')
-    parser.add_argument('--no-ai', action='store_true', help='不使用AI模型定制规则内容')
-    parser.add_argument('--selected-rule', help='预选的单个规则ID（slug）')
-    parser.add_argument('--selected-rules', help='预选的多个规则ID（slug），用逗号分隔')
+    """
+    主函数
+    """
+    parser = argparse.ArgumentParser(description='本地规则选择器和生成工具')
+    # 添加工作区位置参数（可选）
+    parser.add_argument('workspace', nargs='?', default='.', help='项目工作区路径')
+    parser.add_argument('--rules-json', default='rules_data/rules.json', help='规则数据JSON文件路径')
+    parser.add_argument('--workspace', dest='workspace_named', help='项目工作区路径（与位置参数二选一）')
+    parser.add_argument('--selected-rule', help='直接选择指定规则(通过slug)')
+    parser.add_argument('--output-dir', help='自定义输出目录')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式，显示更多日志信息')
     args = parser.parse_args()
     
-    # 确保工作区路径存在
-    if not os.path.exists(args.workspace_path):
-        logger.error(f"工作区路径不存在: {args.workspace_path}")
+    # 如果同时提供了位置参数和命名参数形式的workspace，优先使用命名参数
+    workspace_path = os.path.abspath(args.workspace_named if args.workspace_named else args.workspace)
+    
+    # 设置调试模式
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("调试模式已启用")
+    
+    # 设置工作区路径
+    if not os.path.isdir(workspace_path):
+        logger.error(f"工作区路径不存在或不是目录: {workspace_path}")
+        print(f"错误: 工作区路径不存在或不是目录 - {workspace_path}")
         return
     
+    # 设置输出目录
+    if args.output_dir:
+        output_dir = os.path.abspath(args.output_dir)
+        logger.info(f"使用指定的输出目录: {output_dir}")
+        # 确保目录存在
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        # 默认输出目录
+        output_dir = os.path.join(workspace_path, '.cursor', 'rules')
+    
     # 确保规则JSON文件存在
-    rules_json_path = os.path.join(args.workspace_path, args.rules_json) if not os.path.isabs(args.rules_json) else args.rules_json
+    rules_json_path = os.path.join(workspace_path, args.rules_json) if not os.path.isabs(args.rules_json) else args.rules_json
+    
+    # 尝试多种可能的规则文件名，增强兼容性
+    if not os.path.exists(rules_json_path):
+        logger.debug(f"指定的规则数据文件不存在，尝试替代文件: {rules_json_path}")
+        
+        # 尝试替代文件名
+        alt_paths = [
+            os.path.join(os.path.dirname(rules_json_path), "rules.db.json"),
+            os.path.join(workspace_path, "rules_data", "rules.db.json"),
+            os.path.join(workspace_path, "rules.db.json")
+        ]
+        
+        for alt_path in alt_paths:
+            logger.debug(f"尝试替代路径: {alt_path}")
+            if os.path.exists(alt_path):
+                logger.info(f"使用替代规则数据文件: {alt_path}")
+                print(f"注意: 使用替代规则数据文件 - {alt_path}")
+                rules_json_path = alt_path
+                break
+    
     if not os.path.exists(rules_json_path):
         logger.error(f"规则数据JSON文件不存在: {rules_json_path}")
+        print(f"错误: 规则数据文件不存在 - {rules_json_path}")
+        print("请确保规则数据文件存在于以下位置之一:")
+        print(f"  - {args.rules_json}")
+        print(f"  - {os.path.join(workspace_path, 'rules_data', 'rules.json')}")
+        print(f"  - {os.path.join(workspace_path, 'rules_data', 'rules.db.json')}")
         return
     
     # 加载规则数据
     rules = load_rules_from_json(rules_json_path)
     if not rules:
         logger.error("未能加载任何规则数据")
+        print("错误: 未能加载任何规则数据")
         return
     
-    # 默认使用AI模型，除非明确指定--no-ai
-    use_ai = not args.no_ai
-    if use_ai:
-        logger.info("将使用AI模型定制规则内容")
-    else:
-        logger.info("不使用AI模型定制规则内容")
-    
-    # 如果提供了预选规则，直接处理
+    # 如果提供了选择规则
     if args.selected_rule:
-        # 处理单个预选规则
-        selected_rule = None
-        for rule in rules:
-            if rule.get('slug') == args.selected_rule:
-                selected_rule = rule
-                break
+        # 处理单个选择规则
+        selected_rule = next((rule for rule in rules if rule.get('slug') == args.selected_rule), None)
         
         if selected_rule:
-            logger.info(f"使用预选规则: {args.selected_rule}")
-            process_selected_rules([selected_rule], args.workspace_path, use_ai)
+            logger.info(f"使用指定规则: {args.selected_rule}")
+            print(f"使用指定规则: {selected_rule.get('name', args.selected_rule)}")
+            process_selected_rules([selected_rule], workspace_path, True)
         else:
-            logger.error(f"找不到预选规则: {args.selected_rule}")
+            logger.error(f"找不到指定规则: {args.selected_rule}")
+            print(f"错误: 找不到指定规则 - {args.selected_rule}")
         return
-    
-    if args.selected_rules:
-        # 处理多个预选规则
-        rule_ids = args.selected_rules.split(',')
-        selected_rules = []
-        
-        for rule_id in rule_ids:
-            for rule in rules:
-                if rule.get('slug') == rule_id.strip():
-                    selected_rules.append(rule)
-                    break
-        
-        if selected_rules:
-            logger.info(f"使用预选规则: {args.selected_rules}")
-            process_selected_rules(selected_rules, args.workspace_path, use_ai)
-        else:
-            logger.error(f"找不到任何预选规则: {args.selected_rules}")
-        return
-    
+
     # 显示规则列表供用户选择
+    print("\n请从以下规则列表中选择需要的规则:")
     max_rules = display_rules_list(rules)
-    
+
     # 用户选择规则
     selected_rules = select_rules(rules, max_rules)
-    
+
     # 处理选中的规则
-    process_selected_rules(selected_rules, args.workspace_path, use_ai)
-    
+    process_selected_rules(selected_rules, workspace_path, True)
+
     logger.info("规则选择和生成过程完成")
+    print("\n任务完成！感谢使用Cursor规则生成器。")
 
 if __name__ == "__main__":
     main() 

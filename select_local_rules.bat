@@ -21,7 +21,7 @@ if not exist "%RULES_JSON%" (
 )
 
 echo 正在启动规则选择器...
-python scripts/local_rules_selector.py "%WORKSPACE_PATH%" --rules-json "%RULES_JSON%"
+python scripts/local_rules_selector.py --workspace "%WORKSPACE_PATH%" --rules-json "%RULES_JSON%"
 
 :end
 echo.

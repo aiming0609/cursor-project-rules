@@ -48,7 +48,6 @@ def load_config():
                 for key in config:
                     if key in file_config and file_config[key]:
                         config[key] = file_config[key]
-            logger.info(f"从配置文件加载配置: {CONFIG_FILE}")
     except Exception as e:
         logger.error(f"加载配置文件失败: {str(e)}")
     
@@ -121,6 +120,9 @@ def get_model_config(force_prompt=False):
     
     # 检查是否有必要的配置项
     has_required = all([config.get('model_url'), config.get('api_key'), config.get('model_name')])
+    
+    # 打印配置检测结果
+    logger.info(f"模型配置检测结果: {'完整' if has_required else '不完整'}")
     
     # 强制提示或缺少必要配置项时，提示用户输入
     if force_prompt or not has_required:

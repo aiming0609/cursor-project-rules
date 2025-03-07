@@ -200,13 +200,19 @@ export class RulesWebViewProvider implements vscode.WebviewViewProvider {
    * @param webview WebView对象
    * @returns HTML内容
    */
-  private _getHtmlForWebview(_webview: vscode.Webview): string {
+  private _getHtmlForWebview(webview: vscode.Webview): string {
+    // 获取脚本和样式路径
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'extension', 'webview', 'main.js'));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'extension', 'webview', 'style.css'));
+
     return `<!DOCTYPE html>
     <html lang="zh-CN">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource};">
       <title>Cursor规则管理</title>
+      <link href="${styleUri}" rel="stylesheet">
       <style>
         body {
           font-family: var(--vscode-font-family);
@@ -216,196 +222,107 @@ export class RulesWebViewProvider implements vscode.WebviewViewProvider {
           margin: 0;
         }
         .container {
-          padding: 10px;
+          padding: 15px;
         }
         .header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 10px;
+          margin-bottom: 16px;
+          border-bottom: 1px solid var(--vscode-panel-border);
+          padding-bottom: 8px;
         }
         .header h2 {
           margin: 0;
         }
         .loading {
-          text-align: center;
-          padding: 20px;
           display: none;
+          text-align: center;
+          margin: 20px 0;
         }
         .rules-list {
-          max-height: 500px;
+          margin-bottom: 16px;
+          max-height: 400px;
           overflow-y: auto;
+          border: 1px solid var(--vscode-panel-border);
+          border-radius: 4px;
         }
         .rule-item {
-          padding: 8px;
-          margin-bottom: 4px;
-          border-radius: 4px;
+          padding: 10px;
+          border-bottom: 1px solid var(--vscode-panel-border);
           cursor: pointer;
-          transition: background-color 0.2s;
+          display: flex;
+          align-items: center;
+        }
+        .rule-item:last-child {
+          border-bottom: none;
         }
         .rule-item:hover {
           background-color: var(--vscode-list-hoverBackground);
         }
-        .rule-item.selected {
-          background-color: var(--vscode-list-activeSelectionBackground);
-          color: var(--vscode-list-activeSelectionForeground);
-        }
-        .search-bar {
-          margin-bottom: 10px;
-          width: 100%;
-          padding: 6px;
+        .rule-item input[type="checkbox"] {
+          margin-right: 10px;
         }
         .rule-title {
           font-weight: bold;
-        }
-        .rule-tags {
-          font-size: 0.8em;
-          color: var(--vscode-descriptionForeground);
-          margin-top: 4px;
+          margin-bottom: 4px;
         }
         .rule-description {
-          margin-top: 4px;
           font-size: 0.9em;
+          opacity: 0.8;
+          margin-bottom: 4px;
+        }
+        .actions {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 16px;
         }
         button {
           background-color: var(--vscode-button-background);
           color: var(--vscode-button-foreground);
           border: none;
-          padding: 5px 10px;
-          cursor: pointer;
+          padding: 6px 12px;
           border-radius: 2px;
+          cursor: pointer;
         }
         button:hover {
           background-color: var(--vscode-button-hoverBackground);
+        }
+        .empty-message {
+          text-align: center;
+          padding: 20px;
+          color: var(--vscode-disabledForeground);
+        }
+        .empty-message.error {
+          color: var(--vscode-errorForeground);
+          background-color: var(--vscode-inputValidation-errorBackground);
+          border: 1px solid var(--vscode-inputValidation-errorBorder);
+          padding: 10px;
+          margin-bottom: 10px;
+          border-radius: 4px;
         }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="header">
-          <h2>Cursor可用规则</h2>
-          <button id="refresh-button">刷新</button>
+          <h2>可用规则</h2>
+          <button id="refresh-button" title="刷新规则列表">刷新</button>
         </div>
-        <input type="text" id="search-input" class="search-bar" placeholder="搜索规则...">
-        <div id="loading" class="loading">加载中...</div>
-        <div id="rules-list" class="rules-list"></div>
+        
+        <div id="loading" class="loading">
+          <p>加载规则中...</p>
+        </div>
+        
+        <div id="rules-list" class="rules-list">
+          <!-- 规则列表将在此动态生成 -->
+        </div>
+        
+        <div class="actions">
+          <button id="apply-button">应用所选规则</button>
+        </div>
       </div>
-      <script>
-        (function() {
-          const vscode = acquireVsCodeApi();
-          let rules = [];
-          let selectedRuleId = null;
-          
-          // 元素引用
-          const loadingElement = document.getElementById('loading');
-          const rulesListElement = document.getElementById('rules-list');
-          const refreshButton = document.getElementById('refresh-button');
-          const searchInput = document.getElementById('search-input');
-          
-          // 初始化时隐藏加载提示
-          loadingElement.style.display = 'none';
-          
-          // 渲染规则列表
-          function renderRulesList(rules) {
-            rulesListElement.innerHTML = '';
-            
-            if (rules.length === 0) {
-              rulesListElement.innerHTML = '<div class="no-rules">没有找到规则</div>';
-              return;
-            }
-            
-            rules.forEach(rule => {
-              const ruleElement = document.createElement('div');
-              ruleElement.className = 'rule-item';
-              ruleElement.setAttribute('data-id', rule.id);
-              ruleElement.setAttribute('title', '点击生成这个规则');
-              
-              const titleElement = document.createElement('div');
-              titleElement.className = 'rule-title';
-              titleElement.textContent = rule.title;
-              ruleElement.appendChild(titleElement);
-              
-              if (rule.tags && rule.tags.length > 0) {
-                const tagsElement = document.createElement('div');
-                tagsElement.className = 'rule-tags';
-                tagsElement.textContent = '标签: ' + rule.tags.join(', ');
-                ruleElement.appendChild(tagsElement);
-              }
-              
-              const descElement = document.createElement('div');
-              descElement.className = 'rule-description';
-              descElement.textContent = rule.description;
-              ruleElement.appendChild(descElement);
-              
-              ruleElement.addEventListener('click', () => {
-                // 点击即生成这个规则
-                vscode.postMessage({
-                  command: 'generateRule',
-                  ruleId: rule.id
-                });
-                
-                // 取消之前的选中状态
-                const previousSelected = document.querySelector('.rule-item.selected');
-                if (previousSelected) {
-                  previousSelected.classList.remove('selected');
-                }
-                
-                // 设置新的选中状态
-                ruleElement.classList.add('selected');
-                selectedRuleId = rule.id;
-              });
-              
-              rulesListElement.appendChild(ruleElement);
-            });
-          }
-          
-          // 过滤规则
-          function filterRules(searchText) {
-            if (!searchText) {
-              return rules;
-            }
-            
-            const lowerSearchText = searchText.toLowerCase();
-            return rules.filter(rule => {
-              return (
-                rule.title.toLowerCase().includes(lowerSearchText) ||
-                rule.description.toLowerCase().includes(lowerSearchText) ||
-                (rule.tags && rule.tags.some(tag => tag.toLowerCase().includes(lowerSearchText)))
-              );
-            });
-          }
-          
-          // 监听搜索输入
-          searchInput.addEventListener('input', () => {
-            const searchText = searchInput.value;
-            const filteredRules = filterRules(searchText);
-            renderRulesList(filteredRules);
-          });
-          
-          // 监听刷新按钮
-          refreshButton.addEventListener('click', () => {
-            vscode.postMessage({ command: 'refreshRules' });
-          });
-          
-          // 监听来自扩展的消息
-          window.addEventListener('message', event => {
-            const message = event.data;
-            
-            switch (message.command) {
-              case 'updateRules':
-                rules = message.rules;
-                renderRulesList(rules);
-                break;
-              case 'setLoading':
-                loadingElement.style.display = message.value ? 'block' : 'none';
-                break;
-            }
-          });
-          
-          // 初始加载时请求规则
-          vscode.postMessage({ command: 'refreshRules' });
-        }())
-      </script>
+      <script src="${scriptUri}"></script>
     </body>
     </html>`;
   }

@@ -3,6 +3,27 @@
   "displayName": "Cursor Project Rules Generator",
   "description": "从Cursor Directory获取规则并转换为Cursor项目规则格式",
   "version": "0.1.0",
+  "publisher": "YourPublisherName",
+  "author": {
+    "name": "Your Name"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/cursor-project-rules"
+  },
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#C80000",
+    "theme": "dark"
+  },
+  "keywords": [
+    "cursor",
+    "rules",
+    "ai",
+    "project",
+    "generator"
+  ],
   "engines": {
     "vscode": "^1.70.0"
   },
