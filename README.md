@@ -12,19 +12,24 @@
 
 ## 安装方式
 
+### 通过.vsix文件安装（推荐）
+
+1. 下载最新的 `.vsix` 文件
+2. 在VSCode中，点击左侧扩展图标（或按`Ctrl+Shift+X`）
+3. 点击扩展视图右上角的"..."，选择"从VSIX安装..."
+4. 选择下载的 `.vsix` 文件
+
+或者，您也可以使用命令行安装：
+```bash
+code --install-extension cursor-project-rules-0.1.0.vsix
+```
+
 ### 从VSCode商店安装
 
 1. 打开VSCode
 2. 点击左侧扩展图标或按下 `Ctrl+Shift+X`
 3. 在搜索框中输入 `Cursor Project Rules Generator`
 4. 点击安装
-
-### 手动安装
-
-1. 下载最新的 `.vsix` 文件从 [Releases](https://github.com/yourusername/cursor-project-rules/releases)
-2. 在VSCode中，点击左侧扩展图标
-3. 点击扩展视图右上角的"..."，选择"从VSIX安装..."
-4. 选择下载的 `.vsix` 文件
 
 ## 项目结构
 

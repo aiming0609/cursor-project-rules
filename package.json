@@ -3,9 +3,9 @@
   "displayName": "Cursor Project Rules Generator",
   "description": "从Cursor Directory获取规则并转换为Cursor项目规则格式",
   "version": "0.1.0",
-  "publisher": "YourPublisherName",
+  "publisher": "amai",
   "author": {
-    "name": "Your Name"
+    "name": "amai"
   },
   "repository": {
     "type": "git",
