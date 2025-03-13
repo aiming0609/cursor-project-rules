@@ -149,6 +149,38 @@ npm run watch
 按F5或从调试菜单启动
 ```
 
+### 打包扩展
+
+要将扩展打包为.vsix文件，请按照以下步骤操作：
+
+```bash
+# 安装vsce工具（如果尚未安装）
+npm install -g @vscode/vsce
+
+# 打包扩展
+vsce package
+
+# 这将在当前目录生成一个.vsix文件，例如：cursor-project-rules-0.1.0.vsix
+```
+
+您也可以使用以下命令指定版本号：
+
+```bash
+vsce package x.y.z  # 例如：vsce package 1.0.0
+```
+
+打包完成后，您可以通过以下方式安装扩展：
+
+1. 在VSCode中，点击左侧扩展图标（或按`Ctrl+Shift+X`）
+2. 点击扩展视图右上角的"..."，选择"从VSIX安装..."
+3. 选择生成的.vsix文件
+
+或者，使用命令行安装：
+
+```bash
+code --install-extension cursor-project-rules-x.y.z.vsix
+```
+
 ## 故障排除
 
 1. **无法调用AI模型**

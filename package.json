@@ -2,7 +2,7 @@
   "name": "cursor-project-rules",
   "displayName": "Cursor Project Rules Generator",
   "description": "从Cursor Directory获取规则并转换为Cursor项目规则格式",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "aiming0609",
   "author": {
     "name": "aiming0609"
