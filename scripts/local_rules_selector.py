@@ -377,7 +377,7 @@ def analyze_with_ai(content, project_info, config):
 
 {content}
 
-返回一个有效的 JSON 数组，每个规则对象必须包含上述四个字段，并严格遵循示例格式。"""
+返回一个有效的 JSON 数组，每个规则对象必须包含上述四个字段，content内容必须以中文返回，并严格遵循示例格式。"""
 
         # 调用 API
         model_url = config.get('model_url')

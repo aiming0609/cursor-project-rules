@@ -149,6 +149,7 @@ async function resetConfigPrompt(context: vscode.ExtensionContext) {
 interface RuleQuickPickItem extends vscode.QuickPickItem {
   id: string;
   slug: string;
+  searchKey: string;
 }
 
 /**
@@ -184,14 +185,22 @@ async function showRulesSelector(context: vscode.ExtensionContext) {
           // 获取规则类型（从slug中提取）
           const ruleType = getRuleTypeFromSlug(rule.slug || '');
           
+          // 提取库信息
+          const tags = rule.tags || [];
+          const libsString = Array.isArray(tags) ? tags.join(', ') : typeof tags === 'string' ? tags : '';
+          
+          // 构建搜索键，包含标题、类型和库信息，用于自定义过滤
+          const searchKey = `${rule.title || ''} ${ruleType} ${libsString}`.toLowerCase();
+          
           return {
             id: rule.slug || `rule-${index}`,
             label: rule.title || '未命名规则',
             // 显示友好的规则类型名称
             description: ruleType,
-            // 在detail中显示简短说明，不包含具体内容
-            detail: '',
-            slug: rule.slug || ''
+            // 在detail中显示库信息
+            detail: libsString ? `使用库: ${libsString}` : '',
+            slug: rule.slug || '',
+            searchKey: searchKey
           };
         });
         
@@ -210,16 +219,38 @@ async function showRulesSelector(context: vscode.ExtensionContext) {
       return;
     }
 
-    // 显示QuickPick列表让用户选择规则
-    const selectedRule = await vscode.window.showQuickPick(rules, {
-      placeHolder: '选择一个规则',
-      ignoreFocusOut: true
+    // 创建QuickPick对象进行更多自定义
+    const quickPick = vscode.window.createQuickPick<RuleQuickPickItem>();
+    quickPick.items = rules;
+    quickPick.placeholder = '选择或搜索规则（支持搜索库名称）';
+    quickPick.ignoreFocusOut = false; // 点击其他地方时隐藏列表
+    
+    // 自定义过滤功能，使搜索包含库内容
+    quickPick.onDidChangeValue(value => {
+      if (!value) {
+        quickPick.items = rules;
+        return;
+      }
+      
+      const searchValue = value.toLowerCase();
+      // 过滤包含搜索词的规则（匹配标题、类型或库信息）
+      quickPick.items = rules.filter(rule => 
+        rule.searchKey.includes(searchValue)
+      );
     });
-
-    if (selectedRule) {
-      // 用户选择了规则，生成规则
-      await generateSingleRule(selectedRule.id, extensionUri);
-    }
+    
+    // 处理选中事件
+    quickPick.onDidAccept(async () => {
+      const selectedItem = quickPick.selectedItems[0];
+      if (selectedItem) {
+        quickPick.hide();
+        // 用户选择了规则，生成规则
+        await generateSingleRule(selectedItem.id, extensionUri);
+      }
+    });
+    
+    // 显示QuickPick
+    quickPick.show();
   } catch (error) {
     vscode.window.showErrorMessage(`显示规则选择界面时出错: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -701,5 +732,215 @@ function getRuleTypeFromSlug(slug: string): string {
     return '📝 指南';
   } else {
     return '🔍 其他';
+  }
+}
+
+/**
+ * @description 从远程服务器更新规则数据库
+ * @param context 扩展上下文
+ */
+async function updateRulesDatabase(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    // 使用扩展上下文获取路径
+    const extensionUri = context.extensionUri;
+    const extensionPath = extensionUri.fsPath;
+    
+    // 规则数据文件路径
+    const rulesDir = path.join(extensionPath, 'rules_data');
+    const rulesJsonPath = path.join(rulesDir, 'rules.db.json');
+    
+    // 确保目录存在
+    if (!fs.existsSync(rulesDir)) {
+      fs.mkdirSync(rulesDir, { recursive: true });
+    }
+    
+    // 创建输出通道
+    const outputChannel = vscode.window.createOutputChannel('Cursor Rules Updater');
+    outputChannel.show();
+    outputChannel.appendLine('开始更新规则数据库...');
+    outputChannel.appendLine(`规则数据目录: ${rulesDir}`);
+    
+    // 显示进度提示
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: '正在更新规则数据库',
+        cancellable: false
+      },
+      async (progress) => {
+        progress.report({ message: '正在获取最新规则...' });
+        
+        try {
+          // 查找脚本路径
+          const scriptsPath = path.join(extensionPath, 'new_scripts', 'fetch_cursor_rules.js');
+          const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+          const workspaceScriptPath = path.join(workspacePath, 'new_scripts', 'fetch_cursor_rules.js');
+          
+          let scriptPath = '';
+          
+          // 检查脚本是否存在
+          if (fs.existsSync(scriptsPath)) {
+            scriptPath = scriptsPath;
+          } else if (fs.existsSync(workspaceScriptPath)) {
+            scriptPath = workspaceScriptPath;
+          } else {
+            // 如果脚本不存在，提示用户
+            outputChannel.appendLine('未找到规则获取脚本，将使用默认方式获取');
+            
+            // 使用内置的httpClient方式获取
+            const config = vscode.workspace.getConfiguration('cursor-rules');
+            const rulesSourceUrl = config.get<string>('rulesSourceUrl') || 'https://cursor.sh/api/rules/db';
+            
+            outputChannel.appendLine(`从 ${rulesSourceUrl} 获取规则数据`);
+            
+            // 使用Node.js内置的https模块获取数据
+            const https = await import('https');
+            const http = await import('http');
+            
+            // 根据URL选择http或https模块
+            const client = rulesSourceUrl.startsWith('https:') ? https : http;
+            
+            return new Promise<void>((resolve, reject) => {
+              const request = client.get(rulesSourceUrl, (response) => {
+                if (response.statusCode !== 200) {
+                  reject(new Error(`获取规则数据失败，HTTP状态码: ${response.statusCode}`));
+                  return;
+                }
+                
+                let data = '';
+                
+                response.on('data', (chunk) => {
+                  data += chunk;
+                  // 更新进度
+                  progress.report({ message: `已接收 ${data.length} 字节数据...` });
+                });
+                
+                response.on('end', async () => {
+                  try {
+                    // 解析JSON数据验证格式
+                    const rulesData = JSON.parse(data);
+                    
+                    // 检查数据是否为数组
+                    if (!Array.isArray(rulesData)) {
+                      reject(new Error('获取的规则数据格式无效，应为数组'));
+                      return;
+                    }
+                    
+                    // 简单验证每个规则至少有标题或slug
+                    const validRules = rulesData.filter((rule: any) => rule.title || rule.slug);
+                    
+                    // 保存到文件
+                    fs.writeFileSync(rulesJsonPath, JSON.stringify(validRules, null, 2), 'utf8');
+                    
+                    outputChannel.appendLine(`规则数据已更新，共 ${validRules.length} 条规则`);
+                    outputChannel.appendLine(`数据已保存到: ${rulesJsonPath}`);
+                    
+                    // 显示成功通知
+                    vscode.window.showInformationMessage(
+                      `规则数据库已成功更新，共有 ${validRules.length} 条规则`
+                    );
+                    
+                    resolve();
+                  } catch (error) {
+                    reject(new Error(`处理规则数据时出错: ${error instanceof Error ? error.message : String(error)}`));
+                  }
+                });
+              });
+              
+              request.on('error', (error) => {
+                reject(new Error(`网络请求失败: ${error.message}`));
+              });
+              
+              // 设置超时时间
+              request.setTimeout(30000, () => {
+                request.destroy();
+                reject(new Error('网络请求超时'));
+              });
+              
+              request.end();
+            });
+          }
+          
+          outputChannel.appendLine(`使用脚本获取规则: ${scriptPath}`);
+          
+          // 使用Node.js子进程运行脚本
+          return new Promise<void>((resolve, reject) => {
+            const nodeProcess = require('child_process').spawn('node', [scriptPath]);
+            
+            nodeProcess.stdout.on('data', (data: Buffer) => {
+              const message = data.toString();
+              outputChannel.append(message);
+              
+              // 更新进度信息
+              if (message.includes('获取数据...')) {
+                progress.report({ message: '正在从cursor.directory获取规则数据...' });
+              } else if (message.includes('成功获取')) {
+                // 提取进度信息
+                const match = message.match(/成功获取\s+(\d+)/);
+                if (match) {
+                  progress.report({ message: `成功获取 ${match[1]} 条规则` });
+                }
+              }
+            });
+            
+            nodeProcess.stderr.on('data', (data: Buffer) => {
+              outputChannel.append(`错误: ${data.toString()}`);
+            });
+            
+            nodeProcess.on('close', (code: number) => {
+              if (code === 0) {
+                // 脚本成功执行
+                outputChannel.appendLine('规则数据获取完成');
+                
+                // 将更新后的规则数据复制到扩展目录
+                try {
+                  // 确保目标目录存在
+                  if (!fs.existsSync(rulesDir)) {
+                    fs.mkdirSync(rulesDir, { recursive: true });
+                  }
+                  
+                  // 从工作区文件复制到扩展目录
+                  const scriptOutput = path.join(path.dirname(scriptPath), '..', 'rules_data', 'rules.db.json');
+                  
+                  if (fs.existsSync(scriptOutput)) {
+                    fs.copyFileSync(scriptOutput, rulesJsonPath);
+                    
+                    // 获取规则数量
+                    const content = fs.readFileSync(rulesJsonPath, 'utf8');
+                    const rules = JSON.parse(content);
+                    
+                    outputChannel.appendLine(`规则数据已更新，共 ${rules.length} 条规则`);
+                    outputChannel.appendLine(`数据已保存到: ${rulesJsonPath}`);
+                    
+                    // 显示成功通知
+                    vscode.window.showInformationMessage(
+                      `规则数据库已成功更新，共有 ${rules.length} 条规则`
+                    );
+                  } else {
+                    outputChannel.appendLine(`未找到脚本输出文件: ${scriptOutput}`);
+                    vscode.window.showWarningMessage('未找到规则数据输出文件');
+                  }
+                  
+                  resolve();
+                } catch (error) {
+                  outputChannel.appendLine(`复制规则数据时出错: ${error instanceof Error ? error.message : String(error)}`);
+                  reject(error);
+                }
+              } else {
+                // 脚本执行失败
+                outputChannel.appendLine(`脚本执行失败，退出码: ${code}`);
+                reject(new Error(`脚本执行失败，退出码: ${code}`));
+              }
+            });
+          });
+        } catch (error) {
+          outputChannel.appendLine(`更新规则数据库失败: ${error instanceof Error ? error.message : String(error)}`);
+          vscode.window.showErrorMessage(`更新规则数据库失败: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
+      }
+    );
+  } catch (error) {
+    vscode.window.showErrorMessage(`更新规则数据库时出错: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

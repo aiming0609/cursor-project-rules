@@ -208,3 +208,53 @@ code --install-extension cursor-project-rules-x.y.z.vsix
 5. **规则版本控制**：实现规则的版本控制，方便用户在不同版本之间切换。
 
 这些改进将在未来版本中逐步实现，以提供更好的用户体验。 
+
+# Cursor Project Rules Generator
+
+一个VSCode扩展，用于生成和管理Cursor项目规则。
+
+## 功能
+
+- **生成项目规则**: 从Cursor Directory中选择并生成项目规则
+- **预览可用规则**: 查看所有可用的Cursor规则
+- **搜索规则**: 支持按规则名称、类型和使用的库进行搜索
+- **规则数据库更新**: 从在线源获取最新规则数据
+
+## 使用方法
+
+### 配置AI模型
+
+首次使用前，需要配置AI模型信息：
+
+1. 从命令面板选择 `Cursor: 配置AI模型URL`
+2. 输入AI模型的API URL地址
+3. 从命令面板选择 `Cursor: 配置API密钥`
+4. 输入AI模型服务的API密钥
+
+### 生成规则
+
+1. 从命令面板选择 `Cursor: 生成项目规则`
+2. 从列表中选择一个规则（支持搜索库名称）
+3. 规则将被生成到项目的 `.cursor/rules` 目录中
+
+### 更新规则数据库
+
+1. 从命令面板选择 `Cursor: 更新规则数据库`
+2. 扩展会自动从Cursor Directory获取最新规则数据
+3. 更新完成后会显示新增的规则数量
+
+## 扩展设置
+
+此扩展提供以下设置：
+
+* `cursor-rules.modelUrl`: AI模型API的URL
+* `cursor-rules.apiKey`: AI模型服务的API密钥
+* `cursor-rules.modelName`: 要使用的AI模型名称（默认为gpt-4）
+* `cursor-rules.pythonPath`: Python解释器路径
+* `cursor-rules.rulesSourceUrl`: 规则数据库更新源URL
+
+## 最新功能
+
+- **支持库搜索**: 规则选择器支持按库名称搜索
+- **点击外部隐藏**: 选择规则时点击编辑器其他区域可隐藏列表
+- **从网站获取规则**: 支持从Cursor Directory网站实时获取最新规则
